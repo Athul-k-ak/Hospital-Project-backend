@@ -3,7 +3,7 @@ const Doctor = require("../models/Doctor");
 const Patient = require("../models/Patient");
 const mongoose = require("mongoose");
 
-// Helper: Convert time string (e.g., "10:00 AM") into minutes since midnight
+// Convert time string (e.g., "10:00 AM") to minutes since midnight
 const parseTime = (timeStr) => {
   const [time, modifier] = timeStr.split(" ");
   let [hours, minutes] = time.split(":").map(Number);
@@ -12,7 +12,7 @@ const parseTime = (timeStr) => {
   return hours * 60 + minutes;
 };
 
-// Helper: Convert minutes since midnight back to time string
+// Convert minutes back to time string
 const formatTime = (minutes) => {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
@@ -21,33 +21,39 @@ const formatTime = (minutes) => {
   return `${formattedHours}:${mins.toString().padStart(2, "0")} ${period}`;
 };
 
-// 📌 Book Appointment (Auto-assigns 10-minute slots)
+const getDayName = (dateString) => {
+  const date = new Date(dateString + "T00:00:00Z");
+  return date.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+};
+
+// 📌 Book Appointment
 const bookAppointment = async (req, res) => {
   try {
-    const { patientId, patient, doctorId, date } = req.body;
+    const { patientId, patient, doctorId, date, time } = req.body;
 
     if (!doctorId || !mongoose.Types.ObjectId.isValid(doctorId)) {
       return res.status(400).json({ message: "Invalid doctorId" });
     }
 
-    // ✅ Validate Date: Allow only today or future dates
-    const appointmentDate = new Date(date);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Remove time from today’s date
-
-    if (appointmentDate < today) {
-      return res.status(400).json({ message: "Cannot book an appointment for a past date. Please select today or a future date." });
+    if (!date) {
+      return res.status(400).json({ message: "Appointment date is required" });
     }
 
-    let finalPatientId;
-    let finalPatientName;
+    const appointmentDate = new Date(date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
+    if (appointmentDate < today) {
+      return res.status(400).json({ message: "Cannot book an appointment for a past date" });
+    }
+
+    let finalPatientId, finalPatientName;
+
+    // Find or Create Patient
     if (patientId) {
       const existingPatient = await Patient.findById(patientId);
-      if (!existingPatient) {
-        return res.status(400).json({ message: "Patient not found" });
-      }
-      finalPatientId = patientId;
+      if (!existingPatient) return res.status(400).json({ message: "Patient not found" });
+      finalPatientId = existingPatient._id;
       finalPatientName = existingPatient.name;
     } else if (patient) {
       const { name, age, gender, phone } = patient;
@@ -61,53 +67,68 @@ const bookAppointment = async (req, res) => {
       return res.status(400).json({ message: "Patient details are required" });
     }
 
+    // Fetch Doctor
     const doctor = await Doctor.findById(doctorId);
-    if (!doctor) {
-      return res.status(400).json({ message: "Doctor not found" });
-    }
+    if (!doctor) return res.status(400).json({ message: "Doctor not found" });
 
-    const appointmentDay = appointmentDate.toLocaleDateString("en-US", { weekday: "long" });
+    const appointmentDay = getDayName(date); // Proper weekday extraction
 
     if (!doctor.availableDays.includes(appointmentDay)) {
-      return res.status(400).json({ 
-        message: `Doctor is not available on ${appointmentDay}. Available days: ${doctor.availableDays.join(", ")}` 
+      return res.status(400).json({
+        message: `Doctor not available on ${appointmentDay}. Available days: ${doctor.availableDays.join(", ")}`,
       });
     }
 
-    if (!doctor.availableTime || !Array.isArray(doctor.availableTime) || doctor.availableTime.length === 0) {
-      return res.status(400).json({ message: "Doctor available time not specified" });
+    if (!Array.isArray(doctor.availableTime) || doctor.availableTime.length === 0) {
+      return res.status(400).json({ message: "Doctor's available time is not set" });
     }
 
-    // Fetch all appointments for the given date
-    const existingAppointments = await Appointment.find({ doctorId, date }).sort({ time: 1 });
+    const existingAppointments = await Appointment.find({ doctorId, date });
+    const takenTimes = existingAppointments.map((appt) => appt.time);
 
-    let availableSlot = null;
+    const isTimeInAvailableSlot = (timeStr) => {
+      const timeMinutes = parseTime(timeStr);
+      return doctor.availableTime.some((slot) => {
+        const [startStr, endStr] = slot.split(" - ");
+        const start = parseTime(startStr);
+        const end = parseTime(endStr);
+        return timeMinutes >= start && timeMinutes + 10 <= end;
+      });
+    };
 
-    // Loop through doctor's available slots
-    for (const slot of doctor.availableTime) {
-      const [startTimeStr, endTimeStr] = slot.split(" - ");
-      let startTime = parseTime(startTimeStr);
-      const endTime = parseTime(endTimeStr);
+    let finalTime = null;
 
-      while (startTime + 10 <= endTime) {
-        const formattedTime = formatTime(startTime);
+    // Check if a time is provided
+    if (time) {
+      if (!isTimeInAvailableSlot(time)) {
+        return res.status(400).json({ message: "Selected time is not within doctor's available slots" });
+      }
+      if (takenTimes.includes(time)) {
+        return res.status(400).json({ message: "Selected time is already booked" });
+      }
+      finalTime = time;
+    } else {
+      // Auto-assign next available 10-min slot
+      for (const slot of doctor.availableTime) {
+        const [startStr, endStr] = slot.split(" - ");
+        let start = parseTime(startStr);
+        const end = parseTime(endStr);
 
-        // Check if this slot is already booked
-        const isBooked = existingAppointments.some((appt) => appt.time === formattedTime);
-
-        if (!isBooked) {
-          availableSlot = formattedTime;
-          break;
+        while (start + 10 <= end) {
+          const formattedTime = formatTime(start);
+          if (!takenTimes.includes(formattedTime)) {
+            finalTime = formattedTime;
+            break;
+          }
+          start += 10;
         }
 
-        startTime += 10; // Move to the next 10-minute slot
+        if (finalTime) break;
       }
 
-      if (availableSlot) break;
-    }
-
-    if (!availableSlot) {
-      return res.status(400).json({ message: "Appointments finished for the day." });
+      if (!finalTime) {
+        return res.status(400).json({ message: "Appointments full for selected day" });
+      }
     }
 
     const appointment = await Appointment.create({
@@ -115,7 +136,7 @@ const bookAppointment = async (req, res) => {
       patientName: finalPatientName,
       doctorId,
       date,
-      time: availableSlot,
+      time: finalTime,
     });
 
     res.status(201).json({
@@ -130,8 +151,8 @@ const bookAppointment = async (req, res) => {
       },
       doctorName: doctor.name,
     });
-
   } catch (error) {
+    console.error("Book Appointment Error:", error.message);
     res.status(500).json({ message: "Server Error", error: error.message });
   }
 };
