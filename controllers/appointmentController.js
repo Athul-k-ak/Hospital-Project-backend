@@ -3,7 +3,7 @@ const Doctor = require("../models/Doctor");
 const Patient = require("../models/Patient");
 const mongoose = require("mongoose");
 
-// Convert time string (e.g., "10:00 AM") to minutes since midnight
+// Convert time string to minutes since midnight
 const parseTime = (timeStr) => {
   const [time, modifier] = timeStr.split(" ");
   let [hours, minutes] = time.split(":").map(Number);
@@ -21,16 +21,18 @@ const formatTime = (minutes) => {
   return `${formattedHours}:${mins.toString().padStart(2, "0")} ${period}`;
 };
 
+// Get day of week from date string
 const getDayName = (dateString) => {
   const date = new Date(dateString + "T00:00:00Z");
   return date.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
 };
 
-// 📌 Book Appointment
+// 📌 Book an Appointment
 const bookAppointment = async (req, res) => {
   try {
     const { patientId, patient, doctorId, date, time } = req.body;
 
+    // Validate doctorId
     if (!doctorId || !mongoose.Types.ObjectId.isValid(doctorId)) {
       return res.status(400).json({ message: "Invalid doctorId" });
     }
@@ -49,10 +51,11 @@ const bookAppointment = async (req, res) => {
 
     let finalPatientId, finalPatientName;
 
-    // Find or Create Patient
+    // Handle Patient - existing or new
     if (patientId) {
       const existingPatient = await Patient.findById(patientId);
       if (!existingPatient) return res.status(400).json({ message: "Patient not found" });
+
       finalPatientId = existingPatient._id;
       finalPatientName = existingPatient.name;
     } else if (patient) {
@@ -60,6 +63,7 @@ const bookAppointment = async (req, res) => {
       if (!name || !age || !gender || !phone) {
         return res.status(400).json({ message: "Incomplete patient details" });
       }
+
       const newPatient = await Patient.create({ name, age, gender, phone });
       finalPatientId = newPatient._id;
       finalPatientName = newPatient.name;
@@ -67,12 +71,11 @@ const bookAppointment = async (req, res) => {
       return res.status(400).json({ message: "Patient details are required" });
     }
 
-    // Fetch Doctor
+    // Fetch doctor and check availability
     const doctor = await Doctor.findById(doctorId);
     if (!doctor) return res.status(400).json({ message: "Doctor not found" });
 
-    const appointmentDay = getDayName(date); // Proper weekday extraction
-
+    const appointmentDay = getDayName(date);
     if (!doctor.availableDays.includes(appointmentDay)) {
       return res.status(400).json({
         message: `Doctor not available on ${appointmentDay}. Available days: ${doctor.availableDays.join(", ")}`,
@@ -83,9 +86,11 @@ const bookAppointment = async (req, res) => {
       return res.status(400).json({ message: "Doctor's available time is not set" });
     }
 
+    // Get taken time slots for the doctor on the selected date
     const existingAppointments = await Appointment.find({ doctorId, date });
     const takenTimes = existingAppointments.map((appt) => appt.time);
 
+    // Time validation helper
     const isTimeInAvailableSlot = (timeStr) => {
       const timeMinutes = parseTime(timeStr);
       return doctor.availableTime.some((slot) => {
@@ -98,17 +103,19 @@ const bookAppointment = async (req, res) => {
 
     let finalTime = null;
 
-    // Check if a time is provided
+    // If user selected a time, validate it
     if (time) {
       if (!isTimeInAvailableSlot(time)) {
         return res.status(400).json({ message: "Selected time is not within doctor's available slots" });
       }
+
       if (takenTimes.includes(time)) {
         return res.status(400).json({ message: "Selected time is already booked" });
       }
+
       finalTime = time;
     } else {
-      // Auto-assign next available 10-min slot
+      // Auto assign time from available slots
       for (const slot of doctor.availableTime) {
         const [startStr, endStr] = slot.split(" - ");
         let start = parseTime(startStr);
@@ -127,10 +134,11 @@ const bookAppointment = async (req, res) => {
       }
 
       if (!finalTime) {
-        return res.status(400).json({ message: "Appointments full for selected day" });
+        return res.status(400).json({ message: "All slots are full for selected date" });
       }
     }
 
+    // Save appointment
     const appointment = await Appointment.create({
       patientId: finalPatientId,
       patientName: finalPatientName,
@@ -157,83 +165,54 @@ const bookAppointment = async (req, res) => {
   }
 };
 
-
+// 📌 Get All Appointments (Grouped)
 const getAppointments = async (req, res) => {
   try {
-    if (!req.user) {
-      return res.status(401).json({ message: "Unauthorized access" });
-    }
+    if (!req.user) return res.status(401).json({ message: "Unauthorized" });
 
     if (!["admin", "reception", "doctor"].includes(req.user.role)) {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const appointmentsByDoctor = await Appointment.aggregate([
-      {
-        $lookup: {
-          from: "doctors",
-          localField: "doctorId",
-          foreignField: "_id",
-          as: "doctor"
-        }
-      },
-      { $unwind: "$doctor" },
-      {
-        $lookup: {
-          from: "patients",
-          localField: "patientId",
-          foreignField: "_id",
-          as: "patient"
-        }
-      },
-      { $unwind: "$patient" },
-      {
-        $group: {
-          _id: { doctor: "$doctor._id", date: "$date" },
-          doctorName: { $first: "$doctor.name" },
-          totalAppointments: { $sum: 1 },
-          date: { $first: "$date" },
-          slots: {
-            $push: {
-              time: "$time",
-              patient: {
-                id: "$patient._id",
-                name: "$patient.name",
-                age: "$patient.age",
-                gender: "$patient.gender",
-                phone: "$patient.phone"
-              }
-            }
-          }
-        }
-      }
-    ]);
+    let query = {};
 
-    // Sort appointments by date, then group by doctor, and sort slots by time
-    const sortedAppointments = appointmentsByDoctor
-      .sort((a, b) => new Date(a.date) - new Date(b.date)) // Sort by date
-      .map((entry) => ({
-        doctorId: entry._id.doctor,
-        doctorName: entry.doctorName,
-        totalAppointments: entry.totalAppointments,
-        date: new Date(entry.date).toISOString().split("T")[0], // YYYY-MM-DD
-        slots: entry.slots.sort((a, b) => {
-          const timeA = new Date(`1970-01-01 ${a.time}`);
-          const timeB = new Date(`1970-01-01 ${b.time}`);
-          return timeA - timeB;
-        })
-      }));
+    // If the user is a doctor, filter only their appointments
+    if (req.user.role === "doctor") {
+      query.doctorId = req.user._id;
+    }
 
-    res.json({ appointments: sortedAppointments });
+    const appointments = await Appointment.find(query)
+      .populate("doctorId", "name specialization")
+      .populate("patientId", "name age gender phone")
+      .sort({ date: 1, time: 1 });
+
+    const formattedAppointments = appointments.map((appt) => ({
+      _id: appt._id,
+      date: appt.date,
+      time: appt.time,
+      status: appt.status || "Booked",
+      doctor: {
+        _id: appt.doctorId?._id,
+        name: appt.doctorId?.name,
+        specialization: appt.doctorId?.specialization,
+      },
+      patient: {
+        _id: appt.patientId?._id,
+        name: appt.patientId?.name,
+        age: appt.patientId?.age,
+        gender: appt.patientId?.gender,
+        phone: appt.patientId?.phone,
+      },
+    }));
+
+    res.json({ appointments: formattedAppointments });
   } catch (error) {
-    console.error("Error in getEnhancedAppointments:", error);
+    console.error("Error in getAppointments:", error);
     res.status(500).json({ message: "Server Error", error: error.message });
   }
 };
 
-
-
-// 📌 Fetch Appointments by Doctor
+// 📌 Get Appointments by Doctor
 const getAppointmentsByDoctor = async (req, res) => {
   try {
     const appointmentsByDoctor = await Appointment.aggregate([
@@ -247,15 +226,26 @@ const getAppointmentsByDoctor = async (req, res) => {
       },
       { $unwind: "$doctor" },
       {
+        $lookup: {
+          from: "patients",  // Assuming the patient collection is named "patients"
+          localField: "patientId",
+          foreignField: "_id",
+          as: "patient"
+        }
+      },
+      { $unwind: "$patient" }, // Unwind the patient data to get the name
+      {
         $group: {
           _id: "$doctor._id",
           doctorName: { $first: "$doctor.name" },
-          appointments: { $push: {
-            _id: "$_id",
-            patientId: "$patientId",
-            date: "$date",
-            time: "$time"
-          }}
+          appointments: {
+            $push: {
+              _id: "$_id",
+              patientName: "$patient.name",  // Add patient's name here
+              date: "$date",
+              time: "$time"
+            }
+          }
         }
       },
       {
@@ -267,10 +257,21 @@ const getAppointmentsByDoctor = async (req, res) => {
         }
       }
     ]);
+
+    // Log the response for debugging purposes
+    console.log("Appointments by Doctor:", appointmentsByDoctor);
+
     res.json(appointmentsByDoctor);
   } catch (error) {
+    console.error("Error in getAppointmentsByDoctor:", error);
     res.status(500).json({ message: "Server Error", error: error.message });
   }
 };
 
-module.exports = { bookAppointment, getAppointments, getAppointmentsByDoctor };
+
+
+module.exports = {
+  bookAppointment,
+  getAppointments,
+  getAppointmentsByDoctor,
+};
