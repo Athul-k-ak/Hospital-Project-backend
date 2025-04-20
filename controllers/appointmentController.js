@@ -268,10 +268,77 @@ const getAppointmentsByDoctor = async (req, res) => {
   }
 };
 
+// 📌 Get Appointments by Doctor ID
+const getAppointmentsByDoctorId = async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+
+    if (!doctorId || !mongoose.Types.ObjectId.isValid(doctorId)) {
+      return res.status(400).json({ message: "Invalid doctor ID" });
+    }
+
+    const appointments = await Appointment.find({ doctorId })
+      .populate("doctorId", "name specialization")
+      .populate("patientId", "name age gender phone")
+      .sort({ date: 1, time: 1 });
+
+    const formatted = appointments.map((appt) => ({
+      _id: appt._id,
+      date: appt.date,
+      time: appt.time,
+      patient: {
+        _id: appt.patientId?._id,
+        name: appt.patientId?.name,
+        age: appt.patientId?.age,
+        gender: appt.patientId?.gender,
+        phone: appt.patientId?.phone,
+      },
+      doctor: {
+        _id: appt.doctorId?._id,
+        name: appt.doctorId?.name,
+        specialization: appt.doctorId?.specialization,
+      },
+    }));
+
+    res.json({ doctorId, appointments: formatted });
+  } catch (error) {
+    console.error("Error in getAppointmentsByDoctorId:", error);
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+// 📌 Update Appointment Status
+const updateAppointmentStatus = async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const { status } = req.body;
+
+    if (!["Booked", "Completed", "Cancelled", "Scheduled"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status value" });
+    }
+
+    const updated = await Appointment.findByIdAndUpdate(
+      appointmentId,
+      { status },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: "Appointment not found" });
+    }
+
+    res.json({ message: "Appointment status updated", appointment: updated });
+  } catch (error) {
+    console.error("Update Appointment Status Error:", error.message);
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
 
 
 module.exports = {
   bookAppointment,
   getAppointments,
   getAppointmentsByDoctor,
+  getAppointmentsByDoctorId,
+  updateAppointmentStatus
 };
