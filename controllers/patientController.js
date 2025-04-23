@@ -36,7 +36,7 @@ const registerPatient = async (req, res) => {
 // Get all Patients (Only Admin and Reception can access)
 const getPatients = async (req, res) => {
   try {
-    if (!req.user || (req.user.role !== "admin" && req.user.role !== "reception")) {
+    if (!req.user || (req.user.role !== "admin" && req.user.role !== "reception" && req.user.role !== "doctor")) {
       return res.status(403).json({ message: "Access denied. Only Admin and Reception can access patients." });
     }
 

@@ -78,5 +78,26 @@ const getBillingByPatient = async (req, res) => {
     res.status(500).json({ message: "Server Error", error: error.message });
   }
 };
+const getBillingById = async (req, res) => {
+  try {
+    const { billingId } = req.params;
+    if (!billingId || !mongoose.Types.ObjectId.isValid(billingId)) {
+      return res.status(400).json({ message: "Invalid billingId" });
+    }
 
-module.exports = { createBilling, getBillings, getBillingByPatient };
+    const billing = await Billing.findById(billingId)
+      .populate("patientId", "name")
+      .populate("appointmentId", "date time");
+
+    if (!billing) {
+      return res.status(404).json({ message: "Billing record not found" });
+    }
+
+    res.json(billing);
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+
+module.exports = { createBilling, getBillings, getBillingByPatient, getBillingById };
