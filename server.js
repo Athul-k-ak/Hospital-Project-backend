@@ -14,6 +14,7 @@ const patientReportRoutes = require("./routes/patientReportRoutes");
 const billingRoutes = require("./routes/billingRoutes");
 const paymentRoutes = require("./routes/paymentRoutes"); 
 const staffRoutes = require("./routes/staffRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 
 
 connectDB();
@@ -40,6 +41,7 @@ app.use("/api/billing", billingRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
