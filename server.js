@@ -22,7 +22,7 @@ connectDB();
 
 const app = express();
 app.use(cors({
-  origin: "http://localhost:5173",  // Allow frontend URL
+  origin: "https://hospital-project-frontend-ejsf.vercel.app/",  // Allow frontend URL
   credentials: true,  // Allow cookies
 }));
 app.use(express.json());
